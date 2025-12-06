@@ -1,0 +1,293 @@
+#include "mainwindow.h"
+#include <QtWidgets/QApplication>
+#include <QtCore/QFileInfo>
+#include <QtCore/QTimer>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , imageHandler(nullptr)
+    , loadCommand(nullptr)
+{
+    setupUI();
+    imageHandler = ImageHandler::createHandler(ImageHandler::Progressive);
+}
+
+MainWindow::~MainWindow()
+{
+    delete imageHandler;
+    delete loadCommand;
+}
+
+void MainWindow::setupUI()
+{
+    setWindowTitle("JPEG Viewer with Progressive Loading");
+    setMinimumSize(1200, 900);
+    resize(1200, 900);
+
+    statusBar()->showMessage("Ready");
+    
+    QWidget* centralWidget = new QWidget(this);
+    setCentralWidget(centralWidget);
+    
+    QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
+
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    loadButton = new QPushButton("Load JPEG", this);
+    saveButton = new QPushButton("Save JPEG", this);
+    nextScanButton = new QPushButton(">", this);
+    nextScanButton->setEnabled(false);
+    nextScanButton->setMaximumWidth(50);
+
+    // Network controls
+    networkLoadButton = new QPushButton("Get from Server", this);
+    ipEdit = new QLineEdit(this);
+    ipEdit->setPlaceholderText("IP address");
+    ipEdit->setFixedWidth(120);
+    portEdit = new QLineEdit(this);
+    portEdit->setPlaceholderText("Port");
+    portEdit->setFixedWidth(60);
+    portEdit->setText("12345");
+
+    buttonLayout->addWidget(loadButton);
+    buttonLayout->addWidget(saveButton);
+    // Upload button
+    uploadButton = new QPushButton("Upload to Server", this);
+    uploadButton->setFixedWidth(140);
+    buttonLayout->addWidget(nextScanButton);
+    buttonLayout->addSpacing(20);
+    buttonLayout->addWidget(ipEdit);
+    buttonLayout->addWidget(portEdit);
+    buttonLayout->addWidget(networkLoadButton);
+    buttonLayout->addWidget(uploadButton);
+    buttonLayout->addStretch();
+
+    mainLayout->addLayout(buttonLayout);
+
+    imageLabel = new QLabel(this);
+    imageLabel->setAlignment(Qt::AlignCenter);
+    imageLabel->setStyleSheet("QLabel { border: 2px solid gray; background-color: #2b2b2b; }");
+    imageLabel->setMinimumSize(1000, 700);
+    imageLabel->setText("No image loaded");
+    imageLabel->setScaledContents(false);
+    mainLayout->addWidget(imageLabel);
+
+    QHBoxLayout* saveOptionsLayout = new QHBoxLayout();
+    
+    progressiveCheckBox = new QCheckBox("Progressive", this);
+    saveOptionsLayout->addWidget(progressiveCheckBox);
+    
+    saveOptionsLayout->addWidget(new QLabel("DCT Method:", this));
+    dctComboBox = new QComboBox(this);
+    dctComboBox->addItem("Integer", 0);
+    dctComboBox->addItem("Fast", 1);
+    dctComboBox->addItem("Float", 2);
+    saveOptionsLayout->addWidget(dctComboBox);
+    
+    saveOptionsLayout->addWidget(new QLabel("Quality:", this));
+    qualitySlider = new QSlider(Qt::Horizontal, this);
+    qualitySlider->setRange(0, 100);
+    qualitySlider->setValue(75);
+    saveOptionsLayout->addWidget(qualitySlider);
+    
+    qualitySpinBox = new QSpinBox(this);
+    qualitySpinBox->setRange(0, 100);
+    qualitySpinBox->setValue(75);
+    saveOptionsLayout->addWidget(qualitySpinBox);
+    
+    saveOptionsLayout->addStretch();
+    
+    mainLayout->addLayout(saveOptionsLayout);
+    mainLayout->addStretch();
+
+
+    connect(loadButton, &QPushButton::clicked, this, &MainWindow::onLoadButtonClicked);
+    connect(saveButton, &QPushButton::clicked, this, &MainWindow::onSaveButtonClicked);
+    connect(nextScanButton, &QPushButton::clicked, this, &MainWindow::onNextScanButtonClicked);
+    connect(qualitySlider, &QSlider::valueChanged, this, &MainWindow::onQualityChanged);
+    connect(qualitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged), 
+            qualitySlider, &QSlider::setValue);
+    connect(qualitySlider, &QSlider::valueChanged, 
+            qualitySpinBox, &QSpinBox::setValue);
+
+    // Network client
+    networkClient = new JPEGClient(this);
+    connect(networkLoadButton, &QPushButton::clicked, this, &MainWindow::onNetworkLoadButtonClicked);
+    connect(networkClient, &JPEGClient::imageReceived, this, &MainWindow::onNetworkImageReceived);
+    connect(networkClient, &JPEGClient::errorOccurred, this, &MainWindow::onNetworkError);
+    connect(uploadButton, &QPushButton::clicked, this, &MainWindow::onUploadButtonClicked);
+    connect(networkClient, &JPEGClient::uploadFinished, this, &MainWindow::onUploadFinished);
+}
+
+void MainWindow::onNetworkLoadButtonClicked()
+{
+    QString ip = ipEdit->text().trimmed();
+    bool ok = false;
+    quint16 port = portEdit->text().toUShort(&ok);
+    if (ip.isEmpty() || !ok) {
+        QMessageBox::warning(this, "Network", "Enter valid IP and port");
+        return;
+    }
+    statusBar()->showMessage("Connecting to server...", 2000);
+    networkClient->getImage(ip, port);
+}
+
+void MainWindow::onNetworkImageReceived(const QImage& image)
+{
+    currentImage = image;
+    updateImageDisplay(image);
+    statusBar()->showMessage("Image received from server", 2000);
+}
+
+void MainWindow::onNetworkError(const QString& error)
+{
+    QMessageBox::critical(this, "Network error", error);
+    statusBar()->showMessage("Network error", 2000);
+}
+
+void MainWindow::onLoadButtonClicked()
+{
+    QString filename = QFileDialog::getOpenFileName(this, 
+        "Load JPEG Image", "", "JPEG Images (*.jpg *.jpeg)");
+    
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFileInfo fileInfo(filename);
+    ImageHandler::HandlerType handlerType = ImageHandler::Progressive;
+
+    if (imageHandler) {
+        delete imageHandler;
+    }
+    imageHandler = ImageHandler::createHandler(handlerType);
+
+    if (loadCommand) {
+        delete loadCommand;
+    }
+    loadCommand = new LoadImageCommand(imageHandler, filename, this);
+    loadCommand->execute();
+    
+    updateNextScanButton();
+}
+
+void MainWindow::onUploadButtonClicked()
+{
+    QString ip = ipEdit->text().trimmed();
+    bool ok = false;
+    quint16 port = portEdit->text().toUShort(&ok);
+    if (ip.isEmpty() || !ok) {
+        QMessageBox::warning(this, "Network", "Enter valid IP and port");
+        return;
+    }
+
+    QString filename = QFileDialog::getOpenFileName(this,
+        "Select JPEG to upload", "", "JPEG Images (*.jpg *.jpeg)");
+    if (filename.isEmpty())
+        return;
+
+    statusBar()->showMessage("Uploading image to server...", 2000);
+    networkClient->uploadImage(ip, port, filename);
+}
+
+void MainWindow::onUploadFinished(bool success, const QString& message)
+{
+    if (success) {
+        statusBar()->showMessage("Upload successful", 3000);
+        QMessageBox::information(this, "Upload", message);
+    } else {
+        statusBar()->showMessage("Upload failed", 3000);
+        QMessageBox::critical(this, "Upload error", message);
+    }
+}
+
+void MainWindow::onSaveButtonClicked()
+{
+    if (currentImage.isNull()) {
+        QMessageBox::warning(this, "Warning", "No image to save");
+        return;
+    }
+    
+    QString filename = QFileDialog::getSaveFileName(this, 
+        "Save JPEG Image", "", "JPEG Images (*.jpg *.jpeg)");
+    
+    if (filename.isEmpty()) {
+        return;
+    }
+    
+    int quality = qualitySlider->value();
+    bool progressive = progressiveCheckBox->isChecked();
+    int dctMethod = dctComboBox->currentData().toInt();
+    
+    SaveImageCommand saveCommand(imageHandler, filename, currentImage, 
+                                 quality, progressive, dctMethod);
+    
+    if (saveCommand.execute()) {
+        QMessageBox::information(this, "Success", "Image saved successfully");
+    } else {
+        QMessageBox::critical(this, "Error", "Failed to save image");
+    }
+}
+
+void MainWindow::onNextScanButtonClicked()
+{
+    if (loadCommand && loadCommand->canLoadNextScan()) {
+        loadCommand->executeNextScan();
+        updateNextScanButton();
+        statusBar()->showMessage(QString("Loaded next scan. Click '>' to load more."), 2000);
+    } else {
+        statusBar()->showMessage("No more scans available", 2000);
+    }
+}
+
+void MainWindow::onQualityChanged(int value)
+{
+    Q_UNUSED(value);
+}
+
+void MainWindow::onImageLoaded(const QImage& image)
+{
+    currentImage = image;
+    updateImageDisplay(image);
+    updateNextScanButton();
+}
+
+void MainWindow::onLoadError(const QString& error)
+{
+    QMessageBox::critical(this, "Error", error);
+    currentImage = QImage();
+    updateImageDisplay(QImage());
+    updateNextScanButton();
+}
+
+void MainWindow::updateImageDisplay(const QImage& image)
+{
+    if (image.isNull()) {
+        imageLabel->setText("No image loaded");
+        imageLabel->setPixmap(QPixmap());
+        return;
+    }
+    
+    QPixmap pixmap = QPixmap::fromImage(image);
+    QSize labelSize = imageLabel->size();
+    QSize scaledSize = pixmap.size();
+    scaledSize.scale(labelSize, Qt::KeepAspectRatio);
+    
+    if (scaledSize != pixmap.size()) {
+        pixmap = pixmap.scaled(scaledSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    }
+    
+    imageLabel->setPixmap(pixmap);
+    imageLabel->setText("");
+}
+
+void MainWindow::updateNextScanButton()
+{
+    if (loadCommand && imageHandler) {
+        bool canLoad = loadCommand->canLoadNextScan();
+        nextScanButton->setEnabled(canLoad);
+    } else {
+        nextScanButton->setEnabled(false);
+    }
+}
+
