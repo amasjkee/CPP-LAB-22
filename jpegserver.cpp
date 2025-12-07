@@ -24,23 +24,20 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
         return;
     }
 
-    // Переменные для накопления данных по сокету и отслеживания состояния
     QByteArray* accum = new QByteArray();
     bool* requestProcessed = new bool(false);
     int* expectedContentLength = new int(-1);
 
     connect(socket, &QTcpSocket::readyRead, [this, socket, accum, requestProcessed, expectedContentLength]() {
-        // Если запрос уже обработан, игнорируем новые данные
         if (*requestProcessed) {
             return;
         }
 
         accum->append(socket->readAll());
 
-        // Ждем конца заголовка
         int headerEnd = accum->indexOf("\r\n\r\n");
         if (headerEnd == -1) {
-            return; // ждем полного заголовка
+            return;
         }
 
         QByteArray header = accum->left(headerEnd);
@@ -48,7 +45,6 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
 
         qDebug() << "Incoming request header:" << header.left(200);
 
-        // Обработка GET запроса
         if (header.startsWith("GET ")) {
             *requestProcessed = true;
             QImage image;
@@ -80,9 +76,7 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
             return;
         }
 
-        // Обработка POST запроса
         if (header.startsWith("POST ")) {
-            // Если Content-Length еще не извлечен, извлекаем его
             if (*expectedContentLength < 0) {
                 QList<QByteArray> lines = header.split('\n');
                 for (const QByteArray& line : lines) {
@@ -109,14 +103,12 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
                 return;
             }
 
-            // Проверяем, полностью ли пришло тело запроса
             if (body.size() < *expectedContentLength) {
                 qDebug() << "Waiting for more body bytes: have" << body.size() 
                          << "need" << *expectedContentLength;
-                return; // дождемся следующего readyRead
+                return;
             }
 
-            // Тело полностью получено, обрабатываем
             *requestProcessed = true;
             QByteArray imageData = body.left(*expectedContentLength);
             QImage img;
@@ -130,7 +122,6 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
                 return;
             }
 
-            // Сохраняем изображение
             bool saved = false;
             if (!imagePath.isEmpty()) {
                 saved = img.save(imagePath, "JPEG");
@@ -153,7 +144,6 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
             return;
         }
 
-        // Неизвестный метод
         *requestProcessed = true;
         QByteArray response = "HTTP/1.1 400 Bad Request\r\n"
                              "Content-Length: 0\r\n\r\n";
@@ -162,13 +152,11 @@ void JPEGServer::incomingConnection(qintptr socketDescriptor) {
         qWarning() << "Unknown HTTP method in request";
     });
 
-    // Обработка ошибок сокета
     connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
             [socket](QAbstractSocket::SocketError error) {
         qWarning() << "Socket error:" << error << socket->errorString();
     });
 
-    // Очистка при отключении
     connect(socket, &QTcpSocket::disconnected, [socket, accum, requestProcessed, expectedContentLength]() {
         delete accum;
         delete requestProcessed;

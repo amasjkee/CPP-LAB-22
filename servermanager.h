@@ -5,18 +5,14 @@
 #include <QProcess>
 #include <QString>
 
-/**
- * ServerManager - Facade Pattern для управления серверным процессом
- * Упрощает запуск, остановку и мониторинг состояния JPEG сервера
- */
 class ServerManager : public QObject
 {
     Q_OBJECT
 
 public:
     enum ServerMode {
-        Normal,      // Обычный сервер (QTcpServer)
-        Secure       // Безопасный сервер (QSslServer)
+        Normal,
+        Secure
     };
 
     explicit ServerManager(QObject* parent = nullptr);

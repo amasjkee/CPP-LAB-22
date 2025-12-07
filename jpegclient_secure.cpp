@@ -32,7 +32,6 @@ void JPEGSslClient::getImage(const QString& host, quint16 port) {
         return;
     }
 
-    // Подготовка для GET
     buffer.clear();
     headerParsed = false;
     contentLength = 0;
@@ -42,25 +41,7 @@ void JPEGSslClient::getImage(const QString& host, quint16 port) {
     qDebug() << "Connecting to secure server" << host << ":" << port;
     socket->abort();
 
-    // ============================================================
-    // ГОСТ ШИФРОВАНИЕ: Настройка сертификатов
-    // ============================================================
-    // Для реальной работы с ГОСТ необходимо:
-    // 1. Установить библиотеку поддержки ГОСТ (например, CryptoPro CSP)
-    // 2. Загрузить CA сертификаты ГОСТ:
-    //
-    // QList<QSslCertificate> caCerts = QSslCertificate::fromPath("gost_ca.crt");
-    // socket->setCaCertificates(caCerts);
-    //
-    // Примечание: Qt по умолчанию использует OpenSSL, который не поддерживает ГОСТ.
-    // Для поддержки ГОСТ требуется пересборка Qt с поддержкой ГОСТ или использование
-    // альтернативных библиотек (например, CryptoPro CSP для Windows).
-    // ============================================================
-
     socket->connectToHostEncrypted(host, port);
-    
-    // В демонстрационном режиме игнорируем ошибки SSL
-    // В продакшене нужно проверять сертификаты
     socket->ignoreSslErrors();
     
     if (!socket->waitForEncrypted(5000)) {
@@ -99,7 +80,6 @@ void JPEGSslClient::getImage(const QString& host, quint16 port) {
 }
 
 void JPEGSslClient::uploadImage(const QString& host, quint16 port, const QString& filename) {
-    // Валидация входных данных
     if (host.isEmpty()) {
         emit uploadFinished(false, "Host address is empty");
         return;
@@ -127,7 +107,6 @@ void JPEGSslClient::uploadImage(const QString& host, quint16 port, const QString
         return;
     }
 
-    // Подготовка для POST
     buffer.clear();
     headerParsed = false;
     contentLength = 0;
@@ -136,7 +115,7 @@ void JPEGSslClient::uploadImage(const QString& host, quint16 port, const QString
 
     qDebug() << "Uploading" << filename << "(" << data.size() << "bytes) to secure server" << host << ":" << port;
     socket->abort();
-    socket->ignoreSslErrors(); // В демонстрационном режиме
+    socket->ignoreSslErrors();
     socket->connectToHostEncrypted(host, port);
     
     if (!socket->waitForEncrypted(10000)) {
@@ -155,7 +134,6 @@ void JPEGSslClient::uploadImage(const QString& host, quint16 port, const QString
     request += "Connection: close\r\n";
     request += "\r\n";
     
-    // Отправляем заголовок
     qint64 written = socket->write(request);
     if (written != request.size()) {
         mode = None;
@@ -175,7 +153,6 @@ void JPEGSslClient::uploadImage(const QString& host, quint16 port, const QString
         return;
     }
 
-    // Отправляем тело запроса
     written = socket->write(uploadBuffer);
     if (written != uploadBuffer.size()) {
         mode = None;
@@ -207,8 +184,6 @@ void JPEGSslClient::onSslErrors(const QList<QSslError>& errors) {
     for (const QSslError& error : errors) {
         qWarning() << "  -" << error.errorString();
     }
-    // В демонстрационном режиме игнорируем ошибки
-    // В продакшене нужно проверять сертификаты
 }
 
 void JPEGSslClient::onReadyRead() {
@@ -234,7 +209,7 @@ void JPEGSslClient::onReadyRead() {
                 }
                 headerParsed = true;
             } else {
-                return; // Ждем полного заголовка
+                return;
             }
         }
         
@@ -256,7 +231,6 @@ void JPEGSslClient::onReadyRead() {
                     qDebug() << "Received" << buffer.size() << "of" << contentLength << "bytes";
                 }
             } else {
-                // Если Content-Length не указан, пытаемся загрузить все данные
                 QImage img;
                 if (img.loadFromData(buffer, "JPEG")) {
                     lastImage = img;
@@ -270,7 +244,7 @@ void JPEGSslClient::onReadyRead() {
     } else if (mode == UploadImage) {
         int headerEnd = buffer.indexOf("\r\n\r\n");
         if (headerEnd == -1) {
-            return; // Ждем полного заголовка ответа
+            return;
         }
         
         QByteArray header = buffer.left(headerEnd);
@@ -307,6 +281,10 @@ void JPEGSslClient::onReadyRead() {
 }
 
 void JPEGSslClient::onError(QAbstractSocket::SocketError error) {
+    if (error == QAbstractSocket::RemoteHostClosedError && mode == UploadImage) {
+        return;
+    }
+    
     QString err = socket->errorString();
     qWarning() << "Socket error:" << error << "-" << err;
     

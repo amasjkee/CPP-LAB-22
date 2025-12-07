@@ -30,7 +30,6 @@ void JPEGClient::getImage(const QString& host, quint16 port) {
         return;
     }
 
-    // Подготовка для GET
     buffer.clear();
     headerParsed = false;
     contentLength = 0;
@@ -77,7 +76,6 @@ void JPEGClient::getImage(const QString& host, quint16 port) {
 }
 
 void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& filename) {
-    // Валидация входных данных
     if (host.isEmpty()) {
         emit uploadFinished(false, "Host address is empty");
         return;
@@ -105,7 +103,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
         return;
     }
 
-    // Подготовка для POST
     buffer.clear();
     headerParsed = false;
     contentLength = 0;
@@ -116,7 +113,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
     socket->abort();
     socket->connectToHost(host, port);
     
-    // Увеличенный таймаут для подключения — может быть полезно в сети с задержками
     if (!socket->waitForConnected(10000)) {
         mode = None;
         QString errorMsg = QString("Connection failed: %1").arg(socket->errorString());
@@ -133,7 +129,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
     request += "Connection: close\r\n";
     request += "\r\n";
     
-    // Отправляем заголовок
     qint64 written = socket->write(request);
     if (written != request.size()) {
         mode = None;
@@ -144,7 +139,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
         return;
     }
     
-    // Дождёмся, пока байты будут отправлены в сокет
     if (!socket->waitForBytesWritten(5000)) {
         mode = None;
         QString errorMsg = QString("Write timeout (header): %1").arg(socket->errorString());
@@ -154,7 +148,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
         return;
     }
 
-    // Отправляем тело запроса
     written = socket->write(uploadBuffer);
     if (written != uploadBuffer.size()) {
         mode = None;
@@ -175,7 +168,6 @@ void JPEGClient::uploadImage(const QString& host, quint16 port, const QString& f
     }
 
     qDebug() << "Upload data sent, waiting for server response";
-    // Чтение ответа будет выполнено в onReadyRead когда данные придут
 }
 
 void JPEGClient::onReadyRead() {
@@ -201,7 +193,7 @@ void JPEGClient::onReadyRead() {
                 }
                 headerParsed = true;
             } else {
-                return; // Ждем полного заголовка
+                return;
             }
         }
         
@@ -223,8 +215,6 @@ void JPEGClient::onReadyRead() {
                     qDebug() << "Received" << buffer.size() << "of" << contentLength << "bytes";
                 }
             } else {
-                // Если Content-Length не указан, пытаемся загрузить все данные
-                // (не рекомендуется, но для совместимости)
                 QImage img;
                 if (img.loadFromData(buffer, "JPEG")) {
                     lastImage = img;
@@ -238,7 +228,7 @@ void JPEGClient::onReadyRead() {
     } else if (mode == UploadImage) {
         int headerEnd = buffer.indexOf("\r\n\r\n");
         if (headerEnd == -1) {
-            return; // Ждем полного заголовка ответа
+            return;
         }
         
         QByteArray header = buffer.left(headerEnd);
@@ -275,6 +265,10 @@ void JPEGClient::onReadyRead() {
 }
 
 void JPEGClient::onError(QAbstractSocket::SocketError error) {
+    if (error == QAbstractSocket::RemoteHostClosedError && mode == UploadImage) {
+        return;
+    }
+    
     QString err = socket->errorString();
     qWarning() << "Socket error:" << error << "-" << err;
     

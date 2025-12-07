@@ -11,7 +11,6 @@ MainWindow::MainWindow(QWidget *parent)
     , networkSslClient(nullptr)
     , serverManager(nullptr)
 {
-    // Initialize objects BEFORE setupUI() to avoid nullptr in connect()
     imageHandler = ImageHandler::createHandler(ImageHandler::Progressive);
     serverManager = new ServerManager(this);
     networkClient = new JPEGClient(this);
