@@ -1,4 +1,4 @@
-QT += core gui widgets network
+QT += core gui widgets network ssl
 
 CONFIG += c++17
 
@@ -8,21 +8,25 @@ TEMPLATE = app
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-     jpegclient.cpp \
-     jpegserver.cpp \
-     jpegserver_secure.cpp \
+    jpegclient.cpp \
+    jpegclient_secure.cpp \
+    jpegserver.cpp \
+    jpegserver_secure.cpp \
     jpegloader.cpp \
     jpegsaver.cpp \
     imagehandler.cpp \
-    jpegstrategy.cpp
+    jpegstrategy.cpp \
+    servermanager.cpp
 
 HEADERS += \
     mainwindow.h \
-     jpegclient.h \
-     jpegserver.h \
-     jpegserver_secure.h \
+    jpegclient.h \
+    jpegclient_secure.h \
+    jpegserver.h \
+    jpegserver_secure.h \
     jpegloader.h \
     jpegsaver.h \
     imagehandler.h \
-    jpegstrategy.h
+    jpegstrategy.h \
+    servermanager.h
 

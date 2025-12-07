@@ -7,15 +7,26 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , imageHandler(nullptr)
     , loadCommand(nullptr)
+    , networkClient(nullptr)
+    , networkSslClient(nullptr)
+    , serverManager(nullptr)
 {
     setupUI();
     imageHandler = ImageHandler::createHandler(ImageHandler::Progressive);
+    serverManager = new ServerManager(this);
+    
+    // Initialize network clients
+    networkClient = new JPEGClient(this);
+    networkSslClient = new JPEGSslClient(this);
 }
 
 MainWindow::~MainWindow()
 {
     delete imageHandler;
     delete loadCommand;
+    if (serverManager) {
+        serverManager->stopServer();
+    }
 }
 
 void MainWindow::setupUI()
@@ -40,6 +51,13 @@ void MainWindow::setupUI()
     nextScanButton->setMaximumWidth(50);
 
     // Network controls
+    buttonLayout->addWidget(new QLabel("Client Mode:", this));
+    clientModeComboBox = new QComboBox(this);
+    clientModeComboBox->addItem("Normal", 0);
+    clientModeComboBox->addItem("Secure (SSL)", 1);
+    clientModeComboBox->setFixedWidth(120);
+    buttonLayout->addWidget(clientModeComboBox);
+    
     networkLoadButton = new QPushButton("Get from Server", this);
     ipEdit = new QLineEdit(this);
     ipEdit->setPlaceholderText("IP address");
@@ -98,8 +116,53 @@ void MainWindow::setupUI()
     saveOptionsLayout->addStretch();
     
     mainLayout->addLayout(saveOptionsLayout);
-    mainLayout->addStretch();
 
+    // Server controls section
+    QHBoxLayout* serverLayout = new QHBoxLayout();
+    serverLayout->addWidget(new QLabel("Server:", this));
+    
+    serverStartButton = new QPushButton("Start Server", this);
+    serverStopButton = new QPushButton("Stop Server", this);
+    serverStopButton->setEnabled(false);
+    
+    serverLayout->addWidget(serverStartButton);
+    serverLayout->addWidget(serverStopButton);
+    
+    serverLayout->addWidget(new QLabel("Mode:", this));
+    serverModeComboBox = new QComboBox(this);
+    serverModeComboBox->addItem("Normal", ServerManager::Normal);
+    serverModeComboBox->addItem("Secure (SSL)", ServerManager::Secure);
+    serverModeComboBox->setFixedWidth(120);
+    serverLayout->addWidget(serverModeComboBox);
+    
+    serverLayout->addWidget(new QLabel("Port:", this));
+    serverPortEdit = new QLineEdit(this);
+    serverPortEdit->setPlaceholderText("12345");
+    serverPortEdit->setText("12345");
+    serverPortEdit->setFixedWidth(80);
+    serverLayout->addWidget(serverPortEdit);
+    
+    serverLayout->addWidget(new QLabel("Image:", this));
+    serverImagePathEdit = new QLineEdit(this);
+    serverImagePathEdit->setPlaceholderText("Select image file...");
+    serverImagePathEdit->setReadOnly(true);
+    serverLayout->addWidget(serverImagePathEdit);
+    
+    serverImagePathButton = new QPushButton("Browse...", this);
+    serverImagePathButton->setFixedWidth(80);
+    serverLayout->addWidget(serverImagePathButton);
+    
+    serverProgressiveCheckBox = new QCheckBox("Progressive", this);
+    serverLayout->addWidget(serverProgressiveCheckBox);
+    
+    serverStatusLabel = new QLabel("Stopped", this);
+    serverStatusLabel->setStyleSheet("QLabel { color: red; font-weight: bold; }");
+    serverLayout->addWidget(serverStatusLabel);
+    
+    serverLayout->addStretch();
+    mainLayout->addLayout(serverLayout);
+    
+    mainLayout->addStretch();
 
     connect(loadButton, &QPushButton::clicked, this, &MainWindow::onLoadButtonClicked);
     connect(saveButton, &QPushButton::clicked, this, &MainWindow::onSaveButtonClicked);
@@ -110,13 +173,23 @@ void MainWindow::setupUI()
     connect(qualitySlider, &QSlider::valueChanged, 
             qualitySpinBox, &QSpinBox::setValue);
 
-    // Network client
-    networkClient = new JPEGClient(this);
+    // Network clients connections
     connect(networkLoadButton, &QPushButton::clicked, this, &MainWindow::onNetworkLoadButtonClicked);
     connect(networkClient, &JPEGClient::imageReceived, this, &MainWindow::onNetworkImageReceived);
     connect(networkClient, &JPEGClient::errorOccurred, this, &MainWindow::onNetworkError);
-    connect(uploadButton, &QPushButton::clicked, this, &MainWindow::onUploadButtonClicked);
     connect(networkClient, &JPEGClient::uploadFinished, this, &MainWindow::onUploadFinished);
+    connect(networkSslClient, &JPEGSslClient::imageReceived, this, &MainWindow::onNetworkImageReceived);
+    connect(networkSslClient, &JPEGSslClient::errorOccurred, this, &MainWindow::onNetworkError);
+    connect(networkSslClient, &JPEGSslClient::uploadFinished, this, &MainWindow::onUploadFinished);
+    connect(uploadButton, &QPushButton::clicked, this, &MainWindow::onUploadButtonClicked);
+
+    // Server manager connections
+    connect(serverStartButton, &QPushButton::clicked, this, &MainWindow::onServerStartButtonClicked);
+    connect(serverStopButton, &QPushButton::clicked, this, &MainWindow::onServerStopButtonClicked);
+    connect(serverImagePathButton, &QPushButton::clicked, this, &MainWindow::onServerImagePathButtonClicked);
+    connect(serverManager, &ServerManager::serverStarted, this, &MainWindow::onServerStarted);
+    connect(serverManager, &ServerManager::serverStopped, this, &MainWindow::onServerStopped);
+    connect(serverManager, &ServerManager::serverError, this, &MainWindow::onServerError);
 }
 
 void MainWindow::onNetworkLoadButtonClicked()
@@ -128,8 +201,15 @@ void MainWindow::onNetworkLoadButtonClicked()
         QMessageBox::warning(this, "Network", "Enter valid IP and port");
         return;
     }
-    statusBar()->showMessage("Connecting to server...", 2000);
-    networkClient->getImage(ip, port);
+    
+    bool secureMode = (clientModeComboBox->currentData().toInt() == 1);
+    statusBar()->showMessage(QString("Connecting to %1 server...").arg(secureMode ? "secure" : "normal"), 2000);
+    
+    if (secureMode) {
+        networkSslClient->getImage(ip, port);
+    } else {
+        networkClient->getImage(ip, port);
+    }
 }
 
 void MainWindow::onNetworkImageReceived(const QImage& image)
@@ -186,8 +266,14 @@ void MainWindow::onUploadButtonClicked()
     if (filename.isEmpty())
         return;
 
-    statusBar()->showMessage("Uploading image to server...", 2000);
-    networkClient->uploadImage(ip, port, filename);
+    bool secureMode = (clientModeComboBox->currentData().toInt() == 1);
+    statusBar()->showMessage(QString("Uploading image to %1 server...").arg(secureMode ? "secure" : "normal"), 2000);
+    
+    if (secureMode) {
+        networkSslClient->uploadImage(ip, port, filename);
+    } else {
+        networkClient->uploadImage(ip, port, filename);
+    }
 }
 
 void MainWindow::onUploadFinished(bool success, const QString& message)
@@ -289,5 +375,87 @@ void MainWindow::updateNextScanButton()
     } else {
         nextScanButton->setEnabled(false);
     }
+}
+
+void MainWindow::onServerStartButtonClicked()
+{
+    QString imagePath = serverImagePathEdit->text().trimmed();
+    if (imagePath.isEmpty()) {
+        QMessageBox::warning(this, "Server", "Please select an image file for the server");
+        return;
+    }
+
+    bool ok;
+    quint16 port = serverPortEdit->text().toUShort(&ok);
+    if (!ok || port == 0) {
+        QMessageBox::warning(this, "Server", "Please enter a valid port number");
+        return;
+    }
+
+    ServerManager::ServerMode mode = static_cast<ServerManager::ServerMode>(
+        serverModeComboBox->currentData().toInt());
+    bool progressive = serverProgressiveCheckBox->isChecked();
+
+    if (serverManager->startServer(mode, port, imagePath, progressive)) {
+        statusBar()->showMessage(QString("Server starting on port %1...").arg(port), 2000);
+    } else {
+        QMessageBox::critical(this, "Server", "Failed to start server. Check the console for details.");
+    }
+}
+
+void MainWindow::onServerStopButtonClicked()
+{
+    serverManager->stopServer();
+    statusBar()->showMessage("Server stopping...", 2000);
+}
+
+void MainWindow::onServerImagePathButtonClicked()
+{
+    QString filename = QFileDialog::getOpenFileName(this,
+        "Select Image for Server", "", "JPEG Images (*.jpg *.jpeg)");
+    if (!filename.isEmpty()) {
+        serverImagePathEdit->setText(filename);
+    }
+}
+
+void MainWindow::onServerStarted(quint16 port, ServerManager::ServerMode mode)
+{
+    QString modeStr = (mode == ServerManager::Secure) ? "Secure" : "Normal";
+    serverStatusLabel->setText(QString("Running (%1) on port %2").arg(modeStr).arg(port));
+    serverStatusLabel->setStyleSheet("QLabel { color: green; font-weight: bold; }");
+    serverStartButton->setEnabled(false);
+    serverStopButton->setEnabled(true);
+    serverPortEdit->setEnabled(false);
+    serverModeComboBox->setEnabled(false);
+    serverImagePathButton->setEnabled(false);
+    statusBar()->showMessage(QString("Server started on port %1 (%2 mode)").arg(port).arg(modeStr), 3000);
+}
+
+void MainWindow::onServerStopped()
+{
+    serverStatusLabel->setText("Stopped");
+    serverStatusLabel->setStyleSheet("QLabel { color: red; font-weight: bold; }");
+    serverStartButton->setEnabled(true);
+    serverStopButton->setEnabled(false);
+    serverPortEdit->setEnabled(true);
+    serverModeComboBox->setEnabled(true);
+    serverImagePathButton->setEnabled(true);
+    statusBar()->showMessage("Server stopped", 2000);
+}
+
+void MainWindow::onServerError(const QString& error)
+{
+    QMessageBox::critical(this, "Server Error", error);
+    statusBar()->showMessage("Server error: " + error, 3000);
+}
+
+void MainWindow::updateServerControls()
+{
+    bool running = serverManager && serverManager->isRunning();
+    serverStartButton->setEnabled(!running);
+    serverStopButton->setEnabled(running);
+    serverPortEdit->setEnabled(!running);
+    serverModeComboBox->setEnabled(!running);
+    serverImagePathButton->setEnabled(!running);
 }
 

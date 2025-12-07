@@ -4,6 +4,8 @@
 #include <QImage>
 #include <QBuffer>
 #include <QDebug>
+#include <QSslKey>
+#include <QSslCertificate>
 
 JPEGSslServer::JPEGSslServer(QObject* parent)
     : QSslServer(parent), strategy(nullptr) {}
@@ -18,29 +20,215 @@ void JPEGSslServer::setImagePath(const QString& path) {
 
 void JPEGSslServer::incomingConnection(qintptr socketDescriptor) {
     QSslSocket* socket = new QSslSocket(this);
-    socket->setSocketDescriptor(socketDescriptor);
-    // Здесь нужно загрузить сертификаты ГОСТ
-    // socket->setPrivateKey("gost_private.key");
-    // socket->setLocalCertificate("gost_cert.crt");
+    if (!socket->setSocketDescriptor(socketDescriptor)) {
+        qWarning() << "Failed to set socket descriptor:" << socket->errorString();
+        delete socket;
+        return;
+    }
+
+    // ============================================================
+    // ГОСТ ШИФРОВАНИЕ: Настройка сертификатов и ключей
+    // ============================================================
+    // Для реальной работы с ГОСТ необходимо:
+    // 1. Установить библиотеку поддержки ГОСТ (например, CryptoPro CSP)
+    // 2. Сгенерировать сертификат и ключ ГОСТ
+    // 3. Загрузить их в QSslSocket:
+    //
+    // QFile keyFile("gost_private.key");
+    // if (keyFile.open(QIODevice::ReadOnly)) {
+    //     QSslKey key(&keyFile, QSsl::Rsa, QSsl::Pem, QSsl::PrivateKey);
+    //     socket->setPrivateKey(key);
+    // }
+    //
+    // QFile certFile("gost_cert.crt");
+    // if (certFile.open(QIODevice::ReadOnly)) {
+    //     QSslCertificate cert(&certFile, QSsl::Pem);
+    //     socket->setLocalCertificate(cert);
+    // }
+    //
+    // Примечание: Qt по умолчанию использует OpenSSL, который не поддерживает ГОСТ.
+    // Для поддержки ГОСТ требуется пересборка Qt с поддержкой ГОСТ или использование
+    // альтернативных библиотек (например, CryptoPro CSP для Windows).
+    // ============================================================
+
+    // Переменные для накопления данных по сокету и отслеживания состояния
+    QByteArray* accum = new QByteArray();
+    bool* requestProcessed = new bool(false);
+    bool* sslEncrypted = new bool(false);
+    int* expectedContentLength = new int(-1);
+
+    // Обработка SSL handshake
+    connect(socket, &QSslSocket::encrypted, [socket, sslEncrypted]() {
+        *sslEncrypted = true;
+        qDebug() << "SSL encryption established";
+    });
+
+    connect(socket, QOverload<const QList<QSslError>&>::of(&QSslSocket::sslErrors),
+            [socket](const QList<QSslError>& errors) {
+        qWarning() << "SSL errors occurred:";
+        for (const QSslError& error : errors) {
+            qWarning() << "  -" << error.errorString();
+        }
+        // В демонстрационном режиме игнорируем ошибки SSL
+        // В продакшене нужно проверять сертификаты
+        socket->ignoreSslErrors();
+    });
+
+    // Запускаем SSL handshake
     socket->startServerEncryption();
-    connect(socket, &QSslSocket::readyRead, [this, socket]() {
-        QByteArray request = socket->readAll();
-        if (request.startsWith("GET ")) {
+
+    // Обработка данных только после установления SSL соединения
+    connect(socket, &QSslSocket::readyRead, [this, socket, accum, requestProcessed, sslEncrypted, expectedContentLength]() {
+        // Если SSL еще не установлен, ждем
+        if (!*sslEncrypted) {
+            qDebug() << "Waiting for SSL encryption...";
+            return;
+        }
+
+        // Если запрос уже обработан, игнорируем новые данные
+        if (*requestProcessed) {
+            return;
+        }
+
+        accum->append(socket->readAll());
+
+        // Ждем конца заголовка
+        int headerEnd = accum->indexOf("\r\n\r\n");
+        if (headerEnd == -1) {
+            return; // ждем полного заголовка
+        }
+
+        QByteArray header = accum->left(headerEnd);
+        QByteArray body = accum->mid(headerEnd + 4);
+
+        qDebug() << "Incoming secure request header:" << header.left(200);
+
+        // Обработка GET запроса
+        if (header.startsWith("GET ")) {
+            *requestProcessed = true;
             QImage image;
-            if (strategy && strategy->loadImage(imagePath, image)) {
+            if (strategy && !imagePath.isEmpty() && strategy->loadImage(imagePath, image)) {
                 QByteArray ba;
                 QBuffer buffer(&ba);
                 buffer.open(QIODevice::WriteOnly);
-                image.save(&buffer, "JPEG");
-                QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                    + QByteArray::number(ba.size()) + "\r\n\r\n" + ba;
+                if (image.save(&buffer, "JPEG")) {
+                    QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                         "Content-Type: image/jpeg\r\n"
+                                         "Content-Length: " + QByteArray::number(ba.size()) + "\r\n"
+                                         "Connection: close\r\n\r\n" + ba;
+                    socket->write(response);
+                    qDebug() << "Sent secure image response, size:" << ba.size();
+                } else {
+                    QByteArray response = "HTTP/1.1 500 Internal Server Error\r\n"
+                                         "Content-Length: 0\r\n\r\n";
+                    socket->write(response);
+                    qWarning() << "Failed to save image to buffer";
+                }
+            } else {
+                QByteArray response = "HTTP/1.1 404 Not Found\r\n"
+                                     "Content-Length: 0\r\n\r\n";
+                socket->write(response);
+                qWarning() << "Image not found or failed to load:" << imagePath;
+            }
+            socket->flush();
+            socket->disconnectFromHost();
+            return;
+        }
+
+        // Обработка POST запроса
+        if (header.startsWith("POST ")) {
+            // Если Content-Length еще не извлечен, извлекаем его
+            if (*expectedContentLength < 0) {
+                QList<QByteArray> lines = header.split('\n');
+                for (const QByteArray& line : lines) {
+                    QByteArray trimmedLine = line.trimmed();
+                    if (trimmedLine.toLower().startsWith("content-length:")) {
+                        QByteArray val = trimmedLine.mid(15).trimmed();
+                        bool ok;
+                        *expectedContentLength = val.toInt(&ok);
+                        if (!ok || *expectedContentLength < 0) {
+                            *expectedContentLength = 0;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (*expectedContentLength <= 0) {
+                *requestProcessed = true;
+                QByteArray response = "HTTP/1.1 400 Bad Request\r\n"
+                                     "Content-Length: 0\r\n\r\n";
+                socket->write(response);
+                socket->disconnectFromHost();
+                qWarning() << "Invalid or missing Content-Length in POST request";
+                return;
+            }
+
+            // Проверяем, полностью ли пришло тело запроса
+            if (body.size() < *expectedContentLength) {
+                qDebug() << "Waiting for more body bytes: have" << body.size() 
+                         << "need" << *expectedContentLength;
+                return; // дождемся следующего readyRead
+            }
+
+            // Тело полностью получено, обрабатываем
+            *requestProcessed = true;
+            QByteArray imageData = body.left(*expectedContentLength);
+            QImage img;
+            
+            if (!img.loadFromData(imageData, "JPEG")) {
+                QByteArray response = "HTTP/1.1 415 Unsupported Media Type\r\n"
+                                     "Content-Length: 0\r\n\r\n";
+                socket->write(response);
+                socket->disconnectFromHost();
+                qWarning() << "Failed to load image from POST data";
+                return;
+            }
+
+            // Сохраняем изображение
+            bool saved = false;
+            if (!imagePath.isEmpty()) {
+                saved = img.save(imagePath, "JPEG");
+                qDebug() << "Save result:" << saved << "to" << imagePath;
+            } else {
+                qWarning() << "Image path is empty, cannot save uploaded image";
+            }
+
+            if (saved) {
+                QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                     "Content-Length: 0\r\n\r\n";
                 socket->write(response);
             } else {
-                QByteArray response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                QByteArray response = "HTTP/1.1 500 Internal Server Error\r\n"
+                                     "Content-Length: 0\r\n\r\n";
                 socket->write(response);
             }
+            socket->flush();
+            socket->disconnectFromHost();
+            return;
         }
+
+        // Неизвестный метод
+        *requestProcessed = true;
+        QByteArray response = "HTTP/1.1 400 Bad Request\r\n"
+                             "Content-Length: 0\r\n\r\n";
+        socket->write(response);
         socket->disconnectFromHost();
+        qWarning() << "Unknown HTTP method in request";
     });
-    connect(socket, &QSslSocket::disconnected, socket, &QSslSocket::deleteLater);
+
+    // Обработка ошибок сокета
+    connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QSslSocket::errorOccurred),
+            [socket](QAbstractSocket::SocketError error) {
+        qWarning() << "Socket error:" << error << socket->errorString();
+    });
+
+    // Очистка при отключении
+    connect(socket, &QSslSocket::disconnected, [socket, accum, requestProcessed, sslEncrypted, expectedContentLength]() {
+        delete accum;
+        delete requestProcessed;
+        delete sslEncrypted;
+        delete expectedContentLength;
+        socket->deleteLater();
+    });
 }

@@ -19,6 +19,8 @@
 #include "jpegsaver.h"
 #include "imagehandler.h"
 #include "jpegclient.h"
+#include "jpegclient_secure.h"
+#include "servermanager.h"
 
 class MainWindow : public QMainWindow, public ImageLoadObserver
 {
@@ -42,6 +44,12 @@ private slots:
     void onNetworkError(const QString& error);
     void onUploadButtonClicked();
     void onUploadFinished(bool success, const QString& message);
+    void onServerStartButtonClicked();
+    void onServerStopButtonClicked();
+    void onServerImagePathButtonClicked();
+    void onServerStarted(quint16 port, ServerManager::ServerMode mode);
+    void onServerStopped();
+    void onServerError(const QString& error);
 
 private:
     QLabel* imageLabel;
@@ -52,20 +60,34 @@ private:
     QPushButton* uploadButton;
     QLineEdit* ipEdit;
     QLineEdit* portEdit;
+    QComboBox* clientModeComboBox;
     QCheckBox* progressiveCheckBox;
     QComboBox* dctComboBox;
     QSlider* qualitySlider;
     QSpinBox* qualitySpinBox;
+
+    // Server controls
+    QPushButton* serverStartButton;
+    QPushButton* serverStopButton;
+    QPushButton* serverImagePathButton;
+    QLineEdit* serverPortEdit;
+    QLineEdit* serverImagePathEdit;
+    QComboBox* serverModeComboBox;
+    QCheckBox* serverProgressiveCheckBox;
+    QLabel* serverStatusLabel;
 
     QImage currentImage;
     ImageHandler* imageHandler;
     LoadImageCommand* loadCommand;
 
     class JPEGClient* networkClient;
+    class JPEGSslClient* networkSslClient;
+    ServerManager* serverManager;
 
     void setupUI();
     void updateImageDisplay(const QImage& image);
     void updateNextScanButton();
+    void updateServerControls();
 };
 
 #endif // MAINWINDOW_H
