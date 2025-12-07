@@ -1,6 +1,7 @@
 #include "servermanager.h"
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QCoreApplication>
 #include <QStandardPaths>
 
@@ -27,21 +28,52 @@ QString ServerManager::getServerExecutableName(ServerMode mode) const
 
 QString ServerManager::serverExecutablePath()
 {
-    // Пытаемся найти исполняемый файл сервера
-    // Сначала в директории приложения
-    QString appDir = QCoreApplication::applicationDirPath();
     QString serverExe = getServerExecutableName(currentMode);
     
 #ifdef Q_OS_WIN
     serverExe += ".exe";
 #endif
 
+    // Пытаемся найти исполняемый файл сервера в нескольких местах:
+    
+    // 1. В директории приложения (где находится jpeg_viewer.exe)
+    QString appDir = QCoreApplication::applicationDirPath();
     QString path = QDir(appDir).filePath(serverExe);
     if (QFile::exists(path)) {
+        qDebug() << "Found server executable in app directory:" << path;
+        return path;
+    }
+
+    // 2. В директории сборки (debug/release)
+    QString buildDir = QDir::currentPath();
+    path = QDir(buildDir).filePath(serverExe);
+    if (QFile::exists(path)) {
+        qDebug() << "Found server executable in build directory:" << path;
+        return path;
+    }
+
+    // 3. В поддиректориях debug/release
+    QStringList subdirs = {"debug", "release", "Debug", "Release"};
+    for (const QString& subdir : subdirs) {
+        path = QDir(buildDir).filePath(subdir + "/" + serverExe);
+        if (QFile::exists(path)) {
+            qDebug() << "Found server executable in subdirectory:" << path;
+            return path;
+        }
+    }
+
+    // 4. В директории проекта (где .pro файлы)
+    QString projectDir = QDir::currentPath();
+    // Попробуем найти в корне проекта
+    path = QDir(projectDir).filePath(serverExe);
+    if (QFile::exists(path)) {
+        qDebug() << "Found server executable in project directory:" << path;
         return path;
     }
 
     // Если не найден, возвращаем имя (будет искать в PATH)
+    qWarning() << "Server executable not found, will search in PATH:" << serverExe;
+    qWarning() << "Searched in:" << appDir << buildDir << projectDir;
     return serverExe;
 }
 
@@ -88,10 +120,30 @@ bool ServerManager::startServer(ServerMode mode, quint16 port, const QString& im
     arguments << imagePath;
 
     qDebug() << "Starting server:" << executable << arguments;
+    
+    // Проверяем существование файла перед запуском
+    if (!QFile::exists(executable) && !executable.contains("/") && !executable.contains("\\")) {
+        // Если это просто имя файла (не полный путь), проверяем, есть ли он в PATH
+        // Но лучше сразу сказать пользователю
+        QString error = QString("Server executable not found: %1\n\n"
+                               "Please build the server project first:\n"
+                               "1. Open jpeg_server.pro in Qt Creator\n"
+                               "2. Build the project\n"
+                               "3. The executable should be in the build directory")
+                               .arg(executable);
+        qWarning() << error;
+        emit serverError(error);
+        return false;
+    }
+    
     serverProcess->start(executable, arguments);
 
     if (!serverProcess->waitForStarted(3000)) {
-        QString error = QString("Failed to start server: %1").arg(serverProcess->errorString());
+        QString error = QString("Failed to start server: %1\n\n"
+                               "Executable: %2\n"
+                               "Make sure the server is built and accessible.")
+                               .arg(serverProcess->errorString())
+                               .arg(executable);
         qWarning() << error;
         emit serverError(error);
         return false;
