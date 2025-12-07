@@ -1,8 +1,8 @@
 #ifndef JPEGSTRATEGY_H
 #define JPEGSTRATEGY_H
 
-#include <QtGui/QImage>
-#include <QtCore/QString>
+#include <QImage>
+#include <QString>
 
 class JPEGStrategy {
 public:

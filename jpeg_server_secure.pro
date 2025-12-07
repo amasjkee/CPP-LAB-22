@@ -1,4 +1,4 @@
-QT += core network ssl
+QT += core network
 
 CONFIG += c++17 console
 

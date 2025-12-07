@@ -2,9 +2,9 @@
 #define JPEGSAVER_H
 
 #include "imagehandler.h"
-#include <QtCore/QObject>
-#include <QtGui/QImage>
-#include <QtCore/QString>
+#include <QObject>
+#include <QImage>
+#include <QString>
 
 class SaveImageCommand {
 public:

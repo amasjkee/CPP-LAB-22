@@ -2,9 +2,9 @@
 #define IMAGEHANDLER_H
 
 #include "jpegstrategy.h"
-#include <QtGui/QImage>
-#include <QtCore/QString>
-#include <QtCore/QtGlobal>
+#include <QImage>
+#include <QString>
+#include <QtGlobal>
 
 class ImageHandler {
 public:
